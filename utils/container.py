@@ -8,9 +8,9 @@
 # This file is part of Jacinle.
 # Distributed under terms of the MIT license.
 
-import copy
-import collections
+from utils import io
 import numpy as np
+import os
 
 
 class G(dict):
@@ -27,6 +27,10 @@ class G(dict):
 
     def print(self, sep=': ', end='\n', file=None):
         return kvprint(self, sep=sep, end=end, file=file)
+
+    def save_as_json(self, save_path):
+        io.dump_json(save_path, self)
+
 
 class GView(object):
     def __init__(self, dict_=None):

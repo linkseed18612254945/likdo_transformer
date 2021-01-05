@@ -1,17 +1,15 @@
-import nltk
 from torch.utils.data import dataset
 from utils import io
-from datasets.common.vocab import Vocab, build_vocab
-from datasets.common.transforms import *
-from torch.utils.data import dataloader, random_split
+import torch
 from utils.logger import get_logger
-from utils.text_utils import pad_sentences_batch
 import tqdm
 from collections import defaultdict
+from transformers import BatchEncoding
+import random
 logger = get_logger(__file__)
 
 class TextClassifyDataset(dataset.Dataset):
-    def __init__(self, text_path, tokenizer, data_nums='all', use_labels='all', single_label_max_data_nums='all'):
+    def __init__(self, text_path, tokenizer, id2label=None, max_length=128, data_nums='all', use_labels='all', single_label_max_data_nums='all'):
         """
         :param text_path:  Dataset file path, normally is a csv format file
         :param tokenizer:  Transformer.PretrainTokenizer object, can transform text to id list and attention mask
@@ -22,221 +20,163 @@ class TextClassifyDataset(dataset.Dataset):
         super(TextClassifyDataset, self).__init__()
         self.text_path = text_path
         self.tokenizer = tokenizer
-        self.annotation = self.get_annotations()
+        self.data_nums = data_nums
+        self.use_labels = use_labels
+        self.single_label_max_data_nums = single_label_max_data_nums
+        self.id2label = id2label
+        self.label2id = None
+        self.max_length = max_length
+        self.annotations = None
 
-    def get_annotations(self):
+    def build_annotations(self, data_build_func):
         """
         Compile the data file and return a {index: row} data
         :return:
         """
         raise NotImplementedError
 
+    def encode_fn(self, val):
+        if isinstance(val, int):
+            return torch.LongTensor([val])
+        input_ids = self.tokenizer(
+            val,
+            max_length=self.max_length,
+            truncation=True,
+            add_special_tokens=True,  # 添加special tokens， 也就是CLS和SEP
+            pad_to_max_length=True,  # pad到最大的长度
+            return_tensors='pt'  # 返回的类型为pytorch tensor
+        )
+        return input_ids
+
     def __getitem__(self, index):
-        item = self.annotation[index]
-
-        item = {key: torch.tensor(val) for key, val in item}
-
-        if self.text_transformer is not None:
-            text = self.text_transformer((self.annotations[index]['text']))
-        else:
-            text = self.vocab.map_sequence(self.annotations[index]['text'])
-
-        if self.item_transformer is not None:
-            item = self.item_transformer((self.annotations[index]['item']))
-        else:
-            item = self.vocab.map_sequence(self.annotations[index]['item'])
-
-        if self.label_transformer is not None:
-            label = self.label_transformer([self.annotations[index]['label']])
-        else:
-            label = self.annotations[index]['label']
-
-        if self.label_name_transformer is not None:
-            label_name = self.label_name_transformer((self.annotations[index]['label_name']))
-        else:
-            label_name = self.vocab.map_sequence(self.annotations[index]['label_name'])
-
-        return text, item, label, label_name
+        item = self.annotations[index]
+        item_inputs = {}
+        for key, val in item.items():
+            encode_res = self.encode_fn(val)
+            if isinstance(encode_res, BatchEncoding):
+                for k, v in encode_res.items():
+                    if key == 'text':
+                        item_inputs[k] = v.squeeze(0)
+                    else:
+                        item_inputs[f'{key}_{k}'] = v.squeeze(0)
+            else:
+                item_inputs[key] = encode_res
+        return item_inputs
 
     def __len__(self):
         return len(self.annotations.keys())
 
+class TopicYahoo(TextClassifyDataset):
+    labels = ['Society & Culture', 'Science & Mathematics', 'Health', 'Education & Reference',
+              'Computers & Internet', 'Sports', 'Business & Finance', 'Entertainment & Music',
+              'Family & Relationships', 'Politics & Government']
 
+    def __init__(self, text_path, tokenizer, label_map=None, max_length=128, data_nums='all', use_labels='all',
+                 single_label_max_data_nums='all'):
+        super(TopicYahoo, self).__init__(text_path, tokenizer, label_map, max_length, data_nums,
+                                         use_labels, single_label_max_data_nums)
 
-
-class DBpediaConcept(dataset.Dataset):
-    def __init__(self, text_path, text_vocab_json, label_vocab_json, text_transformer=None,
-                 item_transformer=None, label_transformer=None, label_name_transformer=None,
-                 data_nums='all', use_labels='all', single_label_max_data_nums='all'):
-        super(DBpediaConcept, self).__init__()
-
-        # initialize args
-        self.text_path = text_path
-        self.vocab = Vocab.from_json(text_vocab_json)
-        self.label_vocab = Vocab.from_json(label_vocab_json)
-        self.data_nums = data_nums
-        self.num_labels = len(self.label_vocab.idx2word)
-        self.use_labels = use_labels
-        self.single_label_max_data_nums = single_label_max_data_nums
-        self.label_counts = defaultdict(int)
-        self.annotations = self.get_annotations()
-
-        self.text_transformer = text_transformer
-        self.item_transformer = item_transformer
-        self.label_transformer = label_transformer
-        self.label_name_transformer = label_name_transformer
-
-    def get_annotations(self):
+    def build_annotations(self, data_build_func):
+        if data_build_func is None:
+            data_build_func = self.classify_data_build
+        label_counts = defaultdict(int)
         annotations = defaultdict(dict)
         df = io.load_csv(self.text_path, without_header=False, shuffle=True)
+        self.id2label = {i: l.lower() for i, l in enumerate(TopicYahoo.labels)} if self.id2label is None else self.id2label
+        self.label2id = {l: i for i, l in self.id2label.items()}
         data_nums = df.shape[0] if self.data_nums == 'all' else self.data_nums
         annotation_index = 0
-        for _, row in tqdm.tqdm(df.iterrows(), desc='Build dataset annotations', total=data_nums):
+        for _, row in tqdm.tqdm(df.iterrows(), desc='Build Topic Yahoo dataset annotations', total=data_nums):
             label_name = row['label'].lower()
             if self.use_labels != 'all' and label_name not in self.use_labels:
                 continue
-            if self.single_label_max_data_nums != 'all' and self.label_counts[label_name] > self.single_label_max_data_nums:
+            if self.single_label_max_data_nums != 'all' and label_counts[label_name] > self.single_label_max_data_nums:
                 continue
-            annotations[annotation_index] = {'label': self.label_vocab.word2idx[label_name],
-                                             'label_name': label_name,
-                                             'text': row['text'].lower(),
-                                             'item': row['item'].lower()}
-            self.label_counts[label_name] += 1
-            annotation_index += 1
+            build_data = data_build_func(row)
+            for bd in build_data:
+                annotations[annotation_index] = bd
+                label_counts[label_name] += 1
+                annotation_index += 1
             if annotation_index >= data_nums:
                 break
-        return annotations
+        self.annotations = annotations
 
-    def __getitem__(self, index):
-        if self.text_transformer is not None:
-            text = self.text_transformer((self.annotations[index]['text']))
-        else:
-            text = self.vocab.map_sequence(self.annotations[index]['text'])
+    def classify_data_build(self, row):
+        label_name = row['label'].lower()
+        return [{'label': self.label2id[label_name], 'label_name': label_name,
+                'text': row['text'].lower()}]
 
-        if self.item_transformer is not None:
-            item = self.item_transformer((self.annotations[index]['item']))
-        else:
-            item = self.vocab.map_sequence(self.annotations[index]['item'])
+    def nli_data_build(self, row):
+        bds = []
+        nli_query_formats = "[SEP] this text is about {} ?"
+        positive_hypothesis = row['text'].lower() + nli_query_formats.format(row['label'].lower())
+        bds.append({'text': positive_hypothesis, 'label': 1})
+        use_labels = [l for l in self.label2id.keys() if l != row['label']] if self.use_labels == 'all' \
+            else [l for l in self.use_labels if l != row['label']]
 
-        if self.label_transformer is not None:
-            label = self.label_transformer([self.annotations[index]['label']])
-        else:
-            label = self.annotations[index]['label']
+        negative_hypothesises = {'text': row['text'].lower() + nli_query_formats.format(random.choice(use_labels)),
+                                 'label': 0}
+        bds.append(negative_hypothesises)
+        # negative_hypothesises = [row['text'].lower() + nli_query_formats.format(l) for l in use_labels]
+        # bds.extend([{'text': nh, 'label': 0} for nh in negative_hypothesises])
+        return bds
 
-        if self.label_name_transformer is not None:
-            label_name = self.label_name_transformer((self.annotations[index]['label_name']))
-        else:
-            label_name = self.vocab.map_sequence(self.annotations[index]['label_name'])
+class DBpediaConcept(TextClassifyDataset):
+    labels = ['building', 'animal', 'athlete', 'village', 'officeholder', 'meanoftransportation',
+              'plant', 'film', 'writtenwork', 'artist', 'naturalplace', 'company', 'album', 'educationalinstitution']
 
-        return text, item, label, label_name
+    def __init__(self, text_path, tokenizer, label_map=None, max_length=128, data_nums='all', use_labels='all',
+                 single_label_max_data_nums='all'):
+        super(DBpediaConcept, self).__init__(text_path, tokenizer, label_map, max_length, data_nums,
+                                             use_labels, single_label_max_data_nums)
 
-    def __len__(self):
-        return len(self.annotations.keys())
+    def build_annotations(self, data_build_func):
+        if data_build_func is None:
+            data_build_func = self.classify_data_build
+        label_counts = defaultdict(int)
+        annotations = defaultdict(dict)
+        df = io.load_csv(self.text_path, without_header=False, shuffle=True)
+        self.id2label = {i: l for i, l in enumerate(set(df['label'].apply(lambda x: x.lower())))} if self.id2label is None else self.id2label
+        self.label2id = {l: i for i, l in self.id2label.items()}
+        data_nums = df.shape[0] if self.data_nums == 'all' else self.data_nums
+        annotation_index = 0
+        for _, row in tqdm.tqdm(df.iterrows(), desc='Build DBpedia dataset annotations', total=data_nums):
+            label_name = row['label'].lower()
+            if self.use_labels != 'all' and label_name not in self.use_labels:
+                continue
+            if self.single_label_max_data_nums != 'all' and label_counts[label_name] > self.single_label_max_data_nums:
+                continue
+            build_data = data_build_func(row)
+            for bd in build_data:
+                annotations[annotation_index] = bd
+                label_counts[label_name] += 1
+                annotation_index += 1
+            if annotation_index >= data_nums:
+                break
+        self.annotations = annotations
 
-    @classmethod
-    def collate_fn(cls, data):
-        # Sort a data list by caption length (descending order).
-        data.sort(key=lambda x: len(x[0]), reverse=True)
-        texts, items, labels, label_names = zip(*data)
-        if isinstance(labels[0], torch.Tensor):
-            labels = torch.stack(labels, 0).squeeze()
+    def classify_data_build(self, row):
+        label_name = row['label'].lower()
+        return [{'label': self.label2id[label_name], 'label_name': label_name,
+                'text': row['text'].lower(), 'item': row['item'].lower()}]
 
-        text_targets, text_lengths = pad_sentences_batch(texts)
-        item_targets, items_lengths = pad_sentences_batch(items)
-        label_name_targets, label_name_lengths = pad_sentences_batch(label_names)
+    def nli_data_build(self, row):
+        bds = []
+        nli_query_formats = "[SEP] this text is about {} ?"
+        positive_hypothesis = row['text'].lower() + nli_query_formats.format(row['label'].lower())
+        bds.append({'text': positive_hypothesis, 'label': 1})
+        use_labels = [l for l in self.label2id.keys() if l != row['label']] if self.use_labels == 'all' \
+            else [l for l in self.use_labels if l != row['label']]
 
-        feed_dict = {
-            "texts": text_targets,
-            "text_lengths": text_lengths,
-            "items": item_targets,
-            "labels": labels,
-            "label_names": label_name_targets,
-            "is_static_vector": False
-        }
-        return feed_dict
+        negative_hypothesises = {'text': row['text'].lower() + nli_query_formats.format(random.choice(use_labels)), 'label':0}
+        bds.append(negative_hypothesises)
+        # negative_hypothesises = [row['text'].lower() + nli_query_formats.format(l) for l in use_labels]
+        # bds.extend([{'text': nh, 'label': 0} for nh in negative_hypothesises])
+        return bds
 
-def get_train_data(config, text_transformer=None, label_transformer=torch.LongTensor, label_name_transformer=None, collate_fn='default'):
-    if 'dbpedia' in config.data.name:
-        train_dataset = DBpediaConcept(text_path=config.data.train_text_path,
-                                       text_vocab_json=config.data.vocab_path,
-                                       label_vocab_json=config.data.label_vocab_path,
-                                       text_transformer=text_transformer, label_transformer=label_transformer,
-                                       label_name_transformer=label_name_transformer,
-                                       data_nums=config.data.train_data_nums, use_labels=config.data.train_use_labels,
-                                       single_label_max_data_nums=config.data.train_single_label_max_data_nums)
-        if config.data.valid_text_path is not None:
-            valid_dataset = DBpediaConcept(text_path=config.data.valid_text_path,
-                                           text_vocab_json=config.data.vocab_path,
-                                           label_vocab_json=config.data.label_vocab_path,
-                                           text_transformer=text_transformer, label_transformer=label_transformer,
-                                           label_name_transformer=label_name_transformer,
-                                           data_nums=config.data.valid_data_nums,
-                                           use_labels=config.data.valid_use_labels,
-                                           single_label_max_data_nums=config.data.valid_single_label_max_data_nums)
-        else:
-            train_size = int((1 - config.train.valid_percent) * len(train_dataset))
-            val_size = len(train_dataset) - train_size
-            train_dataset, valid_dataset = random_split(train_dataset, [train_size, val_size])
-
-    elif 'news20' in config.data.name:
-        train_dataset = News20(text_path=config.data.train_text_path,
-                               text_vocab_json=config.data.vocab_path,
-                               label_vocab_json=config.data.label_vocab_path,
-                               text_transformer=text_transformer, label_transformer=label_transformer,
-                               label_name_transformer=label_name_transformer,
-                               data_nums=config.data.train_data_nums)
-        if config.data.valid_text_path is not None:
-            valid_dataset = News20(text_path=config.data.valid_text_path,
-                                   text_vocab_json=config.data.vocab_path,
-                                   label_vocab_json=config.data.label_vocab_path,
-                                   text_transformer=text_transformer, label_transformer=label_transformer,
-                                   label_name_transformer=label_name_transformer, data_nums=config.data.train_data_nums)
-        else:
-            train_size = int((1 - config.train.valid_percent) * len(train_dataset))
-            val_size = len(train_dataset) - train_size
-            train_dataset, valid_dataset = random_split(train_dataset, [train_size, val_size])
-    else:
-        raise Exception(f'Not support data {config.data.name}')
-
-    train_dataset = train_dataset.dataset if isinstance(train_dataset, dataset.Subset) else train_dataset
-    valid_dataset = valid_dataset.dataset if isinstance(valid_dataset, dataset.Subset) else valid_dataset
-
-    collate_fn = train_dataset.collate_fn if collate_fn == 'default' else collate_fn
-    train_loader = dataloader.DataLoader(dataset=train_dataset, batch_size=config.train.batch_size, num_workers=config.train.num_workers,
-                                         shuffle=config.train.shuffle, collate_fn=collate_fn)
-    valid_loader = dataloader.DataLoader(dataset=valid_dataset, batch_size=config.train.batch_size, num_workers=config.train.num_workers,
-                                         shuffle=config.train.shuffle, collate_fn=collate_fn)
-    return train_dataset, train_loader, valid_dataset, valid_loader
-
-
-def get_test_data(config, text_transformer=None, label_transformer=torch.LongTensor, label_name_transformer=None, collate_fn='default'):
-    if 'dbpedia' in config.data.name:
-        test_dataset = DBpediaConcept(text_path=config.data.test_text_path,
-                                      text_vocab_json=config.data.vocab_path,
-                                      label_vocab_json=config.data.label_vocab_path,
-                                      text_transformer=text_transformer, label_transformer=label_transformer,
-                                      label_name_transformer=label_name_transformer,
-                                      data_nums=config.data.test_data_nums, use_labels=config.data.test_use_labels,
-                                      single_label_max_data_nums=config.data.test_single_label_max_data_nums)
-
-    elif 'news20' in config.data.name:
-        test_dataset = News20(text_path=config.data.test_text_path,
-                              text_vocab_json=config.data.vocab_path,
-                              label_vocab_json=config.data.label_vocab_path,
-                              text_transformer=text_transformer, label_transformer=label_transformer,
-                              label_name_transformer=label_name_transformer,
-                              data_nums=config.data.test_data_nums, use_labels=config.data.test_use_labels,
-                              single_label_max_data_nums=config.data.test_single_label_max_data_nums)
-    else:
-        raise Exception(f'Not support data {config.data.name}')
-    return test_dataset
 
 if __name__ == '__main__':
     data_path = '/home/ubuntu/likun/nlp_data/text_classify/dbpedia_csv/train.csv'
     text_vocab_path = '/home/ubuntu/likun/vocab/news20_vocab.json'
     label_vocab_path = '/home/ubuntu/likun/vocab/dbpedia_label_vocab.json'
 
-    # # build vocab
-    build_vocab(file_paths=(data_path,),
-                compile_functions=(DBpediaConcept.get_label_name_from_csv,),
-                extra_param=None, vocab_path=label_vocab_path, add_special_token=False)

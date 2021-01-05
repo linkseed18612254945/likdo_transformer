@@ -13,7 +13,6 @@ import itertools
 import collections
 import json
 from utils import io
-from utils import evaluates
 
 
 class AverageMeter(object):
@@ -135,5 +134,3 @@ class GroupMeters(object):
             meters_kv = values
         return meters_kv
 
-if __name__ == '__main__':
-    pass

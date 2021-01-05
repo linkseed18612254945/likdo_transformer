@@ -1,5 +1,4 @@
 from transformers import pipelines
-from transformers import BartTokenizer, BartModel
 import numpy as np
 
 class NLIArgumentHandler(pipelines.ArgumentHandler):
@@ -89,11 +88,6 @@ class MyZeroShotClassificationPipeline(pipelines.Pipeline):
         return result
 
 if __name__ == '__main__':
-    tokenizer = BartTokenizer.from_pretrained("/home/ubuntu/likun/nlp_pretrained/bart-large-mnli")
-    model = BartModel.from_pretrained("/home/ubuntu/likun/nlp_pretrained/bart-large-mnli")
-    candidate_labels = ['political', 'sport']
-    text = 'Obama like china'
-    res = tokenizer(text)
-    # classifier = MyZeroShotClassificationPipeline(model="/home/ubuntu/likun/nlp_pretrained/bart-large-mnli")
-    n_classifier = pipelines.pipeline("zero-shot-classification", model="/home/ubuntu/likun/nlp_pretrained/bart-large-mnli")
-    print(n_classifier(text, candidate_labels))
+    from transformers import pipeline
+    unmasker = pipeline('fill-mask', model='/home/ubuntu/likun/nlp_pretrained/bert-google-uncase-base')
+    unmasker("The man worked as a [MASK].")
