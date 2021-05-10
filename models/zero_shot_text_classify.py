@@ -100,13 +100,13 @@ class BertMetricLearningModel(BertPreTrainedModel):
         total_losses = 0
         for i in range(anchor_vectors.shape[0]):
             anchor_vector = anchor_vectors[i, :]
-            other_index = torch.from_numpy(np.tile(np.array(list(filter(lambda x: x != 1, anchor_vectors.shape[0]))),
+            other_index = torch.from_numpy(np.tile(np.array(list(filter(lambda x: x != i, range(anchor_vectors.shape[0])))),
                                                    anchor_vectors.shape[1]).reshape(anchor_vectors.shape[1], -1))
             # other_vectors = np.delete(anchor_vectors, i, 0)
             other_vectors = torch.gather(anchor_vectors.transpose(1, 0), dim=1, index=other_index).transpose(1, 0)
             same_labels = torch.where(other_vectors == labels[i])
             same_label_vectors = anchor_vectors[same_labels]
-            singe_sample_loss = torch.sum(torch.log(torch.exp(torch.matmul(same_label_vectors, anchor_vector) / self.scl_t) / torch.sum(torch.exp(torch.matmul(other_vectors, anchor_vector) / self.scl_t)))) / (anchor_vectors.shape[0] - 1)
+            singe_sample_loss = torch.sum(torch.log(torch.exp(torch.cos(torch.matmul(same_label_vectors, anchor_vector)) / self.scl_t) / torch.sum(torch.exp(torch.matmul(other_vectors, anchor_vector) / self.scl_t)))) / (anchor_vectors.shape[0] - 1)
             total_losses += singe_sample_loss
         return total_losses
 
@@ -147,22 +147,6 @@ class BertMetricLearningModel(BertPreTrainedModel):
         sequence_output = self.dropout(sequence_output)
 
         attentions = None
-        # attentions = torch.mean(outputs.attentions[-1], dim=1)
-        # label_attentions = None
-        # for positions in label_positions:
-        #     x = None
-        #     for j in range(positions.shape[1]):
-        #         label_attention = attentions[range(positions.shape[0]), :, positions[:, j]].unsqueeze(dim=1)
-        #         if x is None:
-        #             x = label_attention
-        #         else:
-        #             x = torch.cat([x, label_attention], dim=1)
-        #     label_attention = torch.mean(x, dim=1).unsqueeze(dim=1)
-        #     if label_attentions is None:
-        #         label_attentions = label_attention
-        #     else:
-        #         label_attentions = torch.cat([label_attentions, label_attention], dim=1)
-
         anchor_vector = sequence_output[:, 0, :].unsqueeze(dim=1)
         anchor_vector = self.metric_linear(anchor_vector)
         # anchor_vector = outputs[1]
@@ -178,21 +162,6 @@ class BertMetricLearningModel(BertPreTrainedModel):
             else:
                 label_vectors = torch.cat([label_vectors, label_vector], dim=1)
 
-        # for positions in label_positions:
-        #     x = None
-        #     for j in range(positions.shape[1]):
-        #         label_vector = sequence_output[range(positions.shape[0]), positions[:, j], :].unsqueeze(dim=1)
-        #         if x is None:
-        #             x = label_vector
-        #         else:
-        #             x = torch.cat([x, label_vector], dim=1)
-        #     label_vector = torch.mean(x, dim=1).unsqueeze(dim=1)
-        #     if label_vectors is None:
-        #         label_vectors = label_vector
-        #     else:
-        #         label_vectors = torch.cat([label_vectors, label_vector], dim=1)
-
-
         label_vectors = self.dropout(label_vectors)
         label_vectors = self.metric_linear(label_vectors)
         logits = torch.cosine_similarity(label_vectors, anchor_vector, dim=2)
@@ -200,10 +169,11 @@ class BertMetricLearningModel(BertPreTrainedModel):
         loss = None
         if labels is not None:
             ce_loss = self.ce_loss_fct(logits, labels)
+            scl_loss = self.scl_func(anchor_vector, labels)
             # center_loss = self.center_loss_fct(anchor_vector, labels)
             # label_distance_loss = self.label_distance_loss_fct(label_vectors)
             # loss = ce_loss + label_distance_loss
-            loss = ce_loss
+            loss = ce_loss * 0.5 + scl_loss * 0.5
 
         if not return_dict:
             output = (logits,) + outputs[2:]
