@@ -32,3 +32,6 @@ def multi_label_flat(df, label_col, split_seg=' '):
     res_df = pd.DataFrame(data=res)
     return res_df
 
+def text_stat(docs):
+    doc_length = [len(doc) for doc in docs]
+    print(f"Min length: {min(doc_length)}, Max length: {max(doc_length)}, Avg length: {sum(doc_length) / len(docs)}")

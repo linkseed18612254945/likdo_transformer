@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="ubuntu@10.10.111.130:9906">
+  <component name="PublishConfigData" autoUpload="Always" serverName="ubuntu@10.10.111.106:9906">
     <serverData>
-      <paths name="ubuntu@10.10.111.130:9906">
+      <paths name="ubuntu@10.10.111.106:9906">
         <serverdata>
           <mappings>
             <mapping deploy="/likun/likdo_transformer" local="$PROJECT_DIR$" web="/" />

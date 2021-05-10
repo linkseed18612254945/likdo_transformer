@@ -1,79 +1,62 @@
-from models.zero_shot_text_classify import BertNormalClassification
-from transformers import *
+from transformers import RobertaForMaskedLM, RobertaTokenizerFast, AutoTo
 from transformers.trainer import TrainingArguments, Trainer
 import logging
-from utils import container
 from utils import metrics
-from torch.utils.data import random_split
-import os
-from datasets.text_classify_dataset import *
+import datasets
+import mlflow
+from utils import container
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-def dbpedia_main():
+def main():
+    pre_trained_model_name = 'bert-google-uncase-base'
+    logger.critical("Build pre-trained model {}".format(pre_trained_model_name))
+    base_pre_trained_model_path = '/home/ubuntu/likun/nlp_pretrained/{}'.format(pre_trained_model_name)
+    tokenizer = RobertaTokenizer.from_pretrained(base_pre_trained_model_path)
     logger.critical("Build Training and validating dataset")
-    base_pre_trained_model_path = '/home/ubuntu/likun/nlp_pretrained/bert-google-uncase-base'
-    tokenizer = BertTokenizer.from_pretrained(base_pre_trained_model_path)
-    dataset_args = container.G({
-        "total_data_nums": 5000,
-
-        "train_data_nums": 5000,
-        "train_text_path": "/home/ubuntu/likun/nlp_data/text_classify/dbpedia_csv/train.csv",
-        "train_use_labels": ['building', 'animal', 'athlete', 'village', 'officeholder',
-                             'meanoftransportation', 'plant', 'film', 'writtenwork', 'artist'],
-        "train_single_label_max_data_nums": "all",
-
-        "val_percent": 0.1,
-        "val_data_nums": 500,
-        "val_use_labels": ['naturalplace', 'company', 'album', 'educationalinstitution'],
-        "val_single_label_max_data_nums": "all",
+    dataset_args = {
+        "name": "ag_news",
+        "train_size": 10000,
+        "val_size": 3000,
+        "test_size": 1000,
         "max_length": 128
-    })
-    train_dataset = DBpediaConcept(text_path=dataset_args.train_text_path, tokenizer=tokenizer,
-                                   max_length=dataset_args.max_length,
-                                   data_nums=dataset_args.train_data_nums, use_labels=dataset_args.train_use_labels,
-                                   single_label_max_data_nums=dataset_args.train_single_label_max_data_nums)
-    train_dataset.build_annotations(train_dataset.nli_data_build)
+    }
 
-    val_dataset = DBpediaConcept(text_path=dataset_args.train_text_path, tokenizer=tokenizer,
-                                 max_length=dataset_args.max_length,
-                                 data_nums=dataset_args.val_data_nums, use_labels=dataset_args.val_use_labels,
-                                 single_label_max_data_nums=dataset_args.val_single_label_max_data_nums)
-    val_dataset.build_annotations(val_dataset.nli_data_build)
+    def encode(examples):
+        return tokenizer(examples['text'], max_length=dataset_args['max_length'], truncation=True, padding='max_length')
 
-    # train_size = int((1 - dataset_args.val_percent) * len(train_dataset))
-    # val_size = len(train_dataset) - train_size
-    # train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
-
-    logger.critical("Build the pre-train model")
-    # model_args = container.G({
-    #     "num_labels": len(train_dataset.dataset.label2id),
-    #     "id2label": train_dataset.dataset.id2label,
-    #     "label2id": train_dataset.dataset.label2id,
-    # })
-    model_args = container.G({
-        "num_labels": 2,
-        "id2label": {0: 'Not', 1: 'Yes'},
-        "label2id": {'Not': 0, 'Yes': 1},
-    })
-    model = BertForSequenceClassification.from_pretrained(base_pre_trained_model_path, num_labels=model_args.num_labels)
-
+    dataset = datasets.load_dataset(dataset_args['name'])
+    train_dataset = dataset['train'].train_test_split(train_size=dataset_args['train_size'],
+                                                      test_size=dataset_args['val_size'])
+    train_dataset, val_dataset = train_dataset['train'], train_dataset['test']
+    test_dataset = dataset['test'].train_test_split(train_size=dataset_args['test_size'])
+    test_dataset = test_dataset['train']
+    mlflow.log_params()
+    train_dataset = train_dataset.map(encode, batched=True)
+    val_dataset = val_dataset.map(encode, batched=True)
+    test_dataset = test_dataset.map(encode, batched=True)
+    tokenizer.get_vocab()
     logger.critical("Setup the training environment")
+    model = RobertaForMaskedLM.from_pretrained(base_pre_trained_model_path,
+                                                               num_labels=train_dataset.features['label'].num_classes,
+                                                               output_attentions=False,
+                                                               output_hidden_states=False)
+    model.config.return_dict = True
     training_args = TrainingArguments(
-        output_dir='/home/ubuntu/likun/nlp_save_kernels/bert_nil_zero-shot',  # output directory
+        output_dir='/home/ubuntu/likun/nlp_save_kernels/bert_agnews',  # output directory
         num_train_epochs=2,  # total number of training epochs
         per_device_train_batch_size=32,  # batch size per device during training
-        per_device_eval_batch_size=64,  # batch size for evaluation
-        warmup_steps=500,  # number of warmup steps for learning rate scheduler
+        per_device_eval_batch_size=32,  # batch size for evaluation
+        warmup_steps=0,  # number of warmup steps for learning rate scheduler
         weight_decay=0,  # strength of weight decay
-        logging_dir='home/ubuntu/likun/nlp_training_logs/bert_nil_zero-shot',  # directory for storing logs
+        logging_dir='home/ubuntu/likun/nlp_training_logs/bert_agnews',  # directory for storing logs
         logging_steps=10,
         learning_rate=1e-4,
         seed=44,
         no_cuda=False
     )
-
     trainer = Trainer(
         model=model,  # the instantiated 🤗 Transformers model to be trained
         args=training_args,  # training arguments, defined above
@@ -82,90 +65,20 @@ def dbpedia_main():
         compute_metrics=metrics.classify_metrics,
     )
 
-    logger.critical("Start to train and validate")
+    logger.critical("Start to train and validate and test")
     trainer.train()
     trainer.evaluate()
 
-    logger.critical("Save the model and config")
-    model.config.update({'dataset_args': dataset_args})
-    model.config.update({'model_args': model_args})
-    trainer.save_model()
-    tokenizer.save_vocabulary(training_args.output_dir)
 
-def yahoo_main():
-    logger.critical("Build Training and validating dataset")
-    base_pre_trained_model_path = '/home/ubuntu/likun/nlp_pretrained/bert-google-uncase-base'
-    tokenizer = AutoTokenizer.from_pretrained(base_pre_trained_model_path)
-    dataset_args = container.G({
-        "total_data_nums": 5000,
-
-        "train_data_nums": 100,
-        "train_text_path": "/home/ubuntu/likun/nlp_data/zsl/BenchmarkingZeroShot/topic_yahoo/train_half_0.csv",
-        "train_use_labels": "all",
-        "train_single_label_max_data_nums": "all",
-
-        "val_data_nums": 100,
-        "val_text_path": "/home/ubuntu/likun/nlp_data/zsl/BenchmarkingZeroShot/topic_yahoo/dev.csv",
-        "val_use_labels": "all",
-        "val_single_label_max_data_nums": "all",
-
-        "max_length": 128,
-        "num_labels": 2,
-        "id2label": {0: 'Not', 1: 'Yes'},
-        "label2id": {'Not': 0, 'Yes': 1},
+    res = trainer.predict(test_dataset)
+    container.G({
+        "label_ids": '',
+        "predictions": res.label_ids
     })
 
-    train_dataset = TopicYahoo(text_path=dataset_args.train_text_path, tokenizer=tokenizer,
-                               max_length=dataset_args.max_length,
-                               data_nums=dataset_args.train_data_nums, use_labels=dataset_args.train_use_labels,
-                               single_label_max_data_nums=dataset_args.train_single_label_max_data_nums)
-    train_dataset.build_annotations(train_dataset.nli_data_build)
-
-    val_dataset = TopicYahoo(text_path=dataset_args.train_text_path, tokenizer=tokenizer,
-                             max_length=dataset_args.max_length,
-                             data_nums=dataset_args.val_data_nums, use_labels=dataset_args.val_use_labels,
-                             single_label_max_data_nums=dataset_args.val_single_label_max_data_nums)
-    val_dataset.build_annotations(val_dataset.nli_data_build)
-
-    logger.critical("Build the pre-train model")
-    model_args = container.G({
-    })
-
-    model = BertNormalClassification.from_pretrained(base_pre_trained_model_path, num_labels=dataset_args.num_labels)
-
-    logger.critical("Setup the training environment")
-    training_args = TrainingArguments(
-        output_dir='/home/ubuntu/likun/nlp_save_kernels/yahoo_bert_nil_zero-shot',  # output directory
-        num_train_epochs=2,  # total number of training epochs
-        per_device_train_batch_size=32,  # batch size per device during training
-        per_device_eval_batch_size=64,  # batch size for evaluation
-        warmup_steps=500,  # number of warmup steps for learning rate scheduler
-        weight_decay=0,  # strength of weight decay
-        logging_dir='home/ubuntu/likun/nlp_training_logs/yahoo_bert_nil_zero-shot',  # directory for storing logs
-        logging_steps=10,
-        learning_rate=1e-4,
-        seed=44,
-        no_cuda=False
-    )
-
-    trainer = Trainer(
-        model=model,  # the instantiated 🤗 Transformers model to be trained
-        args=training_args,  # training arguments, defined above
-        train_dataset=train_dataset,  # training dataset
-        eval_dataset=val_dataset,  # evaluation dataset
-        compute_metrics=metrics.classify_metrics,
-    )
-
-    logger.critical("Start to train and validate")
-    # trainer.train()
-    # trainer.evaluate()
-
     logger.critical("Save the model and config")
-    model.config.update({'dataset_args': dataset_args})
-    model.config.update({'model_args': model_args})
     trainer.save_model()
     tokenizer.save_vocabulary(training_args.output_dir)
-
 
 if __name__ == '__main__':
-    yahoo_main()
+    main()

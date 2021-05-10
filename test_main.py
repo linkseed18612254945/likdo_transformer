@@ -25,3 +25,5 @@ for index, item in tqdm.tqdm(predict_dataset.annotations.items(), desc="Testing"
     predict_labels.append(res['labels'][0].lower())
 report = classification_report(true_labels, predict_labels)
 print(report)
+
+

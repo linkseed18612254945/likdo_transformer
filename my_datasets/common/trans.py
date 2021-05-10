@@ -69,4 +69,5 @@ def get_image_transform():
     return transform
 
 
-
+def standard_encode(examples, tokenizer):
+    tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding='max_length')
