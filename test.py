@@ -1,11 +1,10 @@
-from transformers import AutoModelForSequenceClassification,BertModel,RobertaModel, AutoTokenizer, AutoModelForMaskedLM, RobertaTokenizer
+from transformers import AutoModelForSequenceClassification,BertTokenizer,RobertaModel, AutoTokenizer, AutoModelForMaskedLM, RobertaTokenizer
 from transformers.trainer import TrainingArguments, Trainer
 from models.my_trainer import Trainer as MyTrainer
 import logging
 from utils import metrics
 import datasets
 import mlflow
-from utils import container, text_utils
 import tqdm
 import numpy as np
 from scipy.spatial import distance
@@ -21,9 +20,9 @@ logger.critical("Build Training and validating dataset")
 dataset_args = {
     "dataset_name": "yahoo_topic",
     "data_cache_dir": "/home/ubuntu/likun/huggingface_dataset",
-    "train_size": 5000,
-    "val_size":3000,
-    "test_size": 5000,
+    "train_size": 500,
+    "val_size": 30,
+    "test_size": 50,
     "max_length": 128,
     "shuffle": True,
 }
@@ -34,7 +33,8 @@ logger.critical("Build pre-trained model {}".format(pre_trained_model_name))
 base_pre_trained_model_path = '/home/ubuntu/likun/nlp_pretrained/{}'.format(pre_trained_model_name)
 # trained_model_path = '/home/ubuntu/likun/nlp_save_kernels/zero-shot-metric-learning-benchmark-topic-small'
 # tokenizer = AutoTokenizer.from_pretrained(trained_model_path)
-tokenizer = AutoTokenizer.from_pretrained(base_pre_trained_model_path)
+tokenizer = BertTokenizer.from_pretrained(base_pre_trained_model_path)
+
 
 from datasets.features import ClassLabel
 from datasets.features import Features
@@ -43,8 +43,12 @@ fea = Features({
     "text": datasets.Value("string"),
     "label": ClassLabel(names_file=os.path.join(yahoo_zsl_path, 'classes.txt'))
 })
-dataset = datasets.load_dataset('csv', data_files={'train': os.path.join(yahoo_zsl_path, 'train_pu_half_v0.csv'),
-                                                   'test': os.path.join(yahoo_zsl_path, 'test.csv')},  features=fea)
+
+download_config = datasets.DownloadConfig()
+download_config.max_retries = 20
+dataset = datasets.load_dataset('csv', data_files={'train': os.path.join(yahoo_zsl_path, 'train_half_v0.csv'),
+                                                   'test': os.path.join(yahoo_zsl_path, 'test.csv')}, features=fea,
+                                download_config=download_config, ignore_verifications=True)
 
 if dataset_args['shuffle']:
     dataset = dataset.shuffle()
@@ -118,7 +122,6 @@ training_args = TrainingArguments(
     learning_rate=5e-5,
     seed=49,
     no_cuda=False,
-    evaluate_during_training=False
 )
 
 train_params = {k: v for k, v in training_args.__dict__.items() if (isinstance(v, int) or isinstance(v, float)) and not isinstance(v, bool)}
@@ -182,4 +185,4 @@ def iter_eval(test_dataset, label_names, chunk_size=512):
     mres = {'eval_{}'.format(k): v for k, v in metrics.base_classify_metrics(y_true, y_predict).items()}
     return y_true, y_predict, mres, None, None, None
 
-train_res = trainer.train(test_func=iter_eval, test_data=test_dataset.select(range(500)), test_label_names=test_label_names)
+train_res = trainer.train(test_func=iter_eval, test_data=val_dataset, test_label_names=train_label_names)

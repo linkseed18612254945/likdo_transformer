@@ -236,6 +236,7 @@ class Trainer:
                 FutureWarning,
             )
         self.global_step = None
+        self.early_stop_step = None
         self.epoch = None
         if self.args.fp16 and _use_native_amp:
             self.scaler = torch.cuda.amp.GradScaler()
@@ -595,6 +596,10 @@ class Trainer:
                     self.lr_scheduler.step()
                     model.zero_grad()
                     self.global_step += 1
+
+                    if self.early_stop_step is not None and self.global_step >= self.early_stop_step:
+                        return TrainOutput(self.global_step, tr_loss / self.global_step)
+
                     self.epoch = epoch + (step + 1) / len(epoch_iterator)
 
                     if (self.args.logging_steps > 0 and self.global_step % self.args.logging_steps == 0) or (
@@ -612,8 +617,6 @@ class Trainer:
 
                         self.log(logs)
 
-                    if self.args.evaluate_during_training and self.global_step % self.args.eval_steps == 0:
-                        self.evaluate()
 
                     if self.args.save_steps > 0 and self.global_step % self.args.save_steps == 0:
                         # In all cases (even distributed/parallel), self.model is always a reference

@@ -10,6 +10,13 @@
             </list>
           </settings>
         </remote-mappings>
+        <remote-mappings server-id="python@sftp://ubuntu@10.10.111.106:9906/usr/bin/python">
+          <settings>
+            <list>
+              <mapping local-root="$PROJECT_DIR$" remote-root="/home/ubuntu/likun/likdo_transformer" />
+            </list>
+          </settings>
+        </remote-mappings>
       </list>
     </list>
   </component>

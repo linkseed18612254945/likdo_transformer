@@ -2,6 +2,15 @@ import torch
 import pandas as pd
 import random
 
+def unmultilabel_process(df, split_col, sep=';'):
+    new_rows = []
+    for index, row in df.iterrows():
+        sc = row[split_col].split(sep)
+        for s in sc:
+            new_row = row.to_dict().copy()
+            new_row[split_col] = s
+            new_rows.append(new_row)
+    return pd.DataFrame(new_rows)
 
 def label_name_random_split(label_names, first_group_num):
     assert first_group_num <= len(label_names), "First group num should less than label type's num"
